@@ -12,7 +12,6 @@
 using namespace std;
 
 const int kDim = 100;
-const float kFlipProbability = 0.0;
 const float kMutateProbability = 0.005;
 const int kPopulation = 200;
 const int kGenerations = 5000;
@@ -24,17 +23,6 @@ const int kModel2RewardDiff = 2;
 const bool USE_COOPERATION = true;
 const bool USE_MIXED_COOPERATION = false;
 const bool USE_MATING = true;
-
-string vec2str(const vector<bool>& v) {
-  string s;
-
-  for (int i = 0; i < v.size(); ++i) {
-    s += v[i] ? "1" : "0";
-    s += i < v.size() - 1 ? ", " : "";
-  }
-  
-  return s;
-}
 
 // Organisms that will be evolving.
 struct Organism {
@@ -48,40 +36,14 @@ struct Organism {
 
 // True model that organisms will be evolving to match.
 struct TrueModel {
-  vector<bool> true_model1;
-  vector<bool> true_model2;
-  vector<bool> noisy_model1;
-  vector<bool> noisy_model2;
-
-  string toString() {
-    string s;
-    s += "TModel1:\n  " + vec2str(this->true_model1) + "\n";
-    s += "TModel2:\n  " + vec2str(this->true_model2) + "\n";
-    s += "NModel1:\n  " + vec2str(this->noisy_model1) + "\n";
-    s += "NModel2:\n  " + vec2str(this->noisy_model2) + "\n";        
-    return s;
-  }  
+  vector<bool> model1;
+  vector<bool> model2;
 };
 
 struct Challenge {
   float reward1;
   float reward2;
 };
-
-// Samples the sampled models (for each generation) from the overall true
-// models.
-void sampleNoisyModels(TrueModel& m) {
-  default_random_engine gen;
-  gen.seed(std::chrono::system_clock::now().time_since_epoch().count());  
-  bernoulli_distribution dist(kFlipProbability);  
-
-  for (int i = 0; i < kDim; ++i) {
-    const bool v1 = m.true_model1[i];
-    const bool v2 = m.true_model2[i];
-    m.noisy_model1[i] = dist(gen) ? !v1 : v1;
-    m.noisy_model2[i] = dist(gen) ? !v2 : v2;    
-  }
-}
 
 vector<bool> initializeModel() {
   vector<bool> m(kDim);
@@ -99,12 +61,8 @@ vector<bool> initializeModel() {
 
 TrueModel initializeTrueModel() {
   TrueModel m;
-  m.true_model1 = initializeModel();
-  m.true_model2 = initializeModel();
-  m.noisy_model1 = initializeModel();
-  m.noisy_model2 = initializeModel();  
-  sampleNoisyModels(m);
-
+  m.model1 = initializeModel();
+  m.model2 = initializeModel();
   return m;
 }
 
@@ -179,10 +137,10 @@ int pickTask(const Organism& o, const Challenge& c) {
 // The task of the organism is to match its model (i.e. bit string) to the
 // "ideal" model (i.e. another bit string). The reward is the percentage of bits
 // that match times the max reward.
-float doTask(const vector<bool>& model, const vector<bool>& noisy_model, float reward) {
+float doTask(const vector<bool>& model, const vector<bool>& true_model, float reward) {
   int num_correct = 0;
   for (int i = 0; i < model.size(); ++i) {
-    num_correct += model[i] == noisy_model[i];
+    num_correct += model[i] == true_model[i];
   }
 
   float perc_correct = static_cast<float>(num_correct) / kDim;
@@ -193,19 +151,19 @@ float doChallenge(const Organism& o, const Challenge& c, const TrueModel& m) {
   int task = pickTask(o, c);
 
   return task == 0
-    ? doTask(o.model1, m.noisy_model1, c.reward1)
-    : doTask(o.model2, m.noisy_model2, c.reward2);
+    ? doTask(o.model1, m.model1, c.reward1)
+    : doTask(o.model2, m.model2, c.reward2);
 }
 
 float doChallengeCooperatively(const Organism& o1, const Organism& o2, const Challenge& c, const TrueModel& m) {
   int o1_task = pickTask(o1, c);
   int o2_task = pickTask(o2, c);
   float o1_reward = o1_task == 0
-    ? doTask(o1.model1, m.noisy_model1, c.reward1)
-    : doTask(o1.model2, m.noisy_model2, c.reward2);
+    ? doTask(o1.model1, m.model1, c.reward1)
+    : doTask(o1.model2, m.model2, c.reward2);
   float o2_reward = o2_task == 0
-    ? doTask(o2.model1, m.noisy_model1, c.reward1)
-    : doTask(o2.model2, m.noisy_model2, c.reward2);
+    ? doTask(o2.model1, m.model1, c.reward1)
+    : doTask(o2.model2, m.model2, c.reward2);
   
   return o1_task == o2_task ? max(o1_reward, o2_reward) : o1_reward + o2_reward;
 }
@@ -230,8 +188,8 @@ void printDebugInfo(const vector<Organism>& population, const TrueModel& m) {
   for (int i = 0; i < population.size(); ++i) {
     int num_correct1 = 0, num_correct2 = 0;
     for (int j = 0; j < kDim; ++j) {
-      num_correct1 += population[i].model1[j] == m.true_model1[j];
-      num_correct2 += population[i].model2[j] == m.true_model2[j];      
+      num_correct1 += population[i].model1[j] == m.model1[j];
+      num_correct2 += population[i].model2[j] == m.model2[j];      
     }
 
     model1_perc_correct.push_back(static_cast<float>(num_correct1) / kDim);
@@ -327,19 +285,13 @@ vector<Organism> getNewPopulation(
       doCrossover(parent1, parent2, child1);
       doCrossover(parent1, parent2, child2);
       doCrossover(parent1, parent2, child3);
-      doCrossover(parent1, parent2, child4);      
-      mutate(child1);
-      mutate(child2);
-      mutate(child3);
-      mutate(child4);            
-      child1.fitness = 0;
-      child2.fitness = 0;
-      child3.fitness = 0;
-      child4.fitness = 0;      
-      new_population.push_back(child1);
-      new_population.push_back(child2);
-      new_population.push_back(child3);
-      new_population.push_back(child4);            
+      doCrossover(parent1, parent2, child4);
+      mutate(child1); mutate(child2);
+      mutate(child3); mutate(child4);
+      child1.fitness = 0; child2.fitness = 0;
+      child3.fitness = 0; child4.fitness = 0;      
+      new_population.push_back(child1); new_population.push_back(child2);
+      new_population.push_back(child3); new_population.push_back(child4);            
     }
   } else {
     for (int i = 0; i < winners.size(); ++i) {
@@ -358,8 +310,6 @@ vector<Organism> getNewPopulation(
 
 // Run a generation of the evolutionary algorithm.
 vector<Organism> runGeneration(vector<Organism>& population, TrueModel& m) {
-  sampleNoisyModels(m);
-
   const vector<int> indices = sortPopulationForMatching(population);
   for (int i = 0; i < kRounds; ++i) {
     Challenge c = sampleChallenge();
@@ -386,7 +336,6 @@ vector<Organism> runGeneration(vector<Organism>& population, TrueModel& m) {
 
 int main() {
   TrueModel m = initializeTrueModel();
-  cout << m.toString() << endl;
 
   vector<Organism> population(kPopulation);
   for (int i = 0; i < kPopulation; ++i) {
