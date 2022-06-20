@@ -8,6 +8,8 @@
 #include <utility>
 #include <chrono>
 #include <algorithm>
+#include <fstream>
+#include <cstdio>
 
 using namespace std;
 
@@ -21,7 +23,7 @@ const int kMinReward = 3;
 const int kModel2RewardDiff = 2;
 
 const bool USE_COOPERATION = true;
-const bool USE_MIXED_COOPERATION = false;
+const bool USE_MIXED_COOPERATION = true;
 const bool USE_MATING = true;
 
 // Organisms that will be evolving.
@@ -156,8 +158,19 @@ float doChallenge(const Organism& o, const Challenge& c, const TrueModel& m) {
 }
 
 float doChallengeCooperatively(const Organism& o1, const Organism& o2, const Challenge& c, const TrueModel& m) {
-  int o1_task = pickTask(o1, c);
-  int o2_task = pickTask(o2, c);
+  int o1_task, o2_task;
+  if (o1.min_reward_diff < o2.min_reward_diff) {
+    o1_task = 1; o2_task = 0;
+  } else if (o2.min_reward_diff < o1.min_reward_diff) {
+    o2_task = 1; o1_task = 0;
+  } else {  // o1.min_reward_diff == o2.min_reward_diff
+    // Flip a coin to decide who takes task1 and 2.
+    default_random_engine gen;
+    gen.seed(std::chrono::system_clock::now().time_since_epoch().count());  
+    bernoulli_distribution dist(0.5);
+    const bool toss = dist(gen);
+    o1_task = toss ? 0 : 1; o2_task = toss ? 1 : 0;
+  }
   float o1_reward = o1_task == 0
     ? doTask(o1.model1, m.model1, c.reward1)
     : doTask(o1.model2, m.model2, c.reward2);
@@ -165,7 +178,7 @@ float doChallengeCooperatively(const Organism& o1, const Organism& o2, const Cha
     ? doTask(o2.model1, m.model1, c.reward1)
     : doTask(o2.model2, m.model2, c.reward2);
   
-  return o1_task == o2_task ? max(o1_reward, o2_reward) : o1_reward + o2_reward;
+  return o1_reward + o2_reward;
 }
 
 
@@ -181,7 +194,10 @@ Challenge sampleChallenge() {
   return (struct Challenge){ .reward1 = reward1, .reward2 = reward2 };
 }
 
-void printDebugInfo(const vector<Organism>& population, const TrueModel& m) {
+void printDebugInfo(const vector<Organism>& population,
+                    const TrueModel& m,
+                    bool add_to_output,
+                    string* output) {
   // Compare population to the true models.
   vector<float> model1_perc_correct, model2_perc_correct;
   vector<int> min_reward_diffs;
@@ -192,14 +208,27 @@ void printDebugInfo(const vector<Organism>& population, const TrueModel& m) {
       num_correct2 += population[i].model2[j] == m.model2[j];      
     }
 
-    model1_perc_correct.push_back(static_cast<float>(num_correct1) / kDim);
-    model2_perc_correct.push_back(static_cast<float>(num_correct2) / kDim);
+    float perc_correct1 = static_cast<float>(num_correct1) / kDim;
+    float perc_correct2 = static_cast<float>(num_correct2) / kDim;    
+    model1_perc_correct.push_back(perc_correct1);
+    model2_perc_correct.push_back(perc_correct2);
     min_reward_diffs.push_back(population[i].min_reward_diff);
+
+    if (add_to_output) {
+      *output +=
+        to_string(perc_correct1) + "," +
+        to_string(perc_correct2) + "," +
+        to_string(population[i].min_reward_diff) + ";";
+    }
   }
+
+  if (add_to_output) {
+    *output += "\n";
+  }
+  
   sort(model1_perc_correct.begin(), model1_perc_correct.end());
   sort(model2_perc_correct.begin(), model2_perc_correct.end());
   sort(min_reward_diffs.begin(), min_reward_diffs.end());
-
 
   cout << "Model1 stats: [" << 
     model1_perc_correct[0] << ", " <<   
@@ -278,7 +307,7 @@ vector<Organism> getNewPopulation(
   }
 
   if (USE_MATING) {
-    for (int i = 0; i < winners.size(); i+=2) {
+    for (int i = 0; i < winners.size() - 1; i+=2) {
       const Organism& parent1 = winners[i];
       const Organism& parent2 = winners[i + 1];
       Organism child1, child2, child3, child4;
@@ -314,7 +343,7 @@ vector<Organism> runGeneration(vector<Organism>& population, TrueModel& m) {
   for (int i = 0; i < kRounds; ++i) {
     Challenge c = sampleChallenge();
 
-    if (USE_COOPERATION && (!USE_MIXED_COOPERATION || i % 2 == 0)) {
+    if (USE_COOPERATION && (!USE_MIXED_COOPERATION || i % 2 != 0)) {
       for (int j = 0; j < kPopulation - 1; j+=2) {
         Organism& o1 = population[indices[j]];
         Organism& o2 = population[indices[j + 1]];
@@ -342,8 +371,18 @@ int main() {
     population[i] = initializeOrganism();
   }
 
+  string output_data;
   for (int i = 0; i < kGenerations; ++i) {
     population = runGeneration(population, m);
-    printDebugInfo(population, m);
+    bool add_to_output = i % 10 == 0;
+    printDebugInfo(population, m, add_to_output, &output_data);
   }
+
+  string output_file = 
+    string("coop") + string(USE_COOPERATION ? "1" : "0") + 
+    string("_mixedcoop") + string(USE_MIXED_COOPERATION ? "1" : "0") +
+    string("_mating") + string(USE_MATING ? "1" : "0") +
+    string(".txt");
+  ofstream out(output_file);
+  out << output_data;
 }
